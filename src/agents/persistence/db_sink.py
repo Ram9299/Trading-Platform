@@ -1,10 +1,9 @@
-import json
 import logging
 import signal
 import sys
 import os
+import json
 import psycopg2
-from psycopg2.extras import execute_batch
 from confluent_kafka import Consumer, KafkaError
 
 from src.core.schemas import MarketTick, AgentSignal, ExecutionOrder
@@ -14,17 +13,17 @@ logger = logging.getLogger("DBSink")
 
 class DBSinkAgent:
     """
-    Sub-Agent: Consumes events from all Kafka topics and persists them into TimescaleDB.
+    Sub-Agent: Consumes events from all Kafka topics and persists them into TimescaleDB/PostgreSQL.
     """
     def __init__(self, kafka_broker: str = "localhost:9092"):
         self.running = True
         self.kafka_broker = kafka_broker
         
-        # Database connection settings
+        # Database connection parameters (supports local Postgres default fallback)
         self.db_host = os.getenv("POSTGRES_HOST", "localhost")
         self.db_port = os.getenv("POSTGRES_PORT", "5432")
-        self.db_user = os.getenv("POSTGRES_USER", "trader")
-        self.db_pass = os.getenv("POSTGRES_PASSWORD", "trader_password")
+        self.db_user = os.getenv("POSTGRES_USER", "postgres")
+        self.db_pass = os.getenv("POSTGRES_PASSWORD", "1234")
         self.db_name = os.getenv("POSTGRES_DB", "market_data")
 
         self.conn = None
@@ -34,7 +33,7 @@ class DBSinkAgent:
         signal.signal(signal.SIGTERM, self._handle_shutdown)
 
     def _connect_db(self):
-        """Establishes connection to TimescaleDB and runs initial schema creation."""
+        """Establishes connection to PostgreSQL/TimescaleDB."""
         try:
             self.conn = psycopg2.connect(
                 host=self.db_host,
@@ -44,20 +43,25 @@ class DBSinkAgent:
                 dbname=self.db_name
             )
             self.conn.autocommit = True
-            logger.info("Connected successfully to TimescaleDB.")
+            logger.info("Connected successfully to PostgreSQL/TimescaleDB.")
             self._initialize_schema()
         except Exception as e:
-            logger.error(f"Failed to connect to TimescaleDB: {e}")
+            logger.warning(f"Could not connect to database ({e}). DBSink running in standby mode.")
+            self.conn = None
 
     def _initialize_schema(self):
-        """Executes init_db.sql if SQL script exists."""
+        if not self.conn:
+            return
         sql_path = os.path.join(os.path.dirname(__file__), "..", "..", "core", "init_db.sql")
         if os.path.exists(sql_path):
-            with open(sql_path, "r") as f:
-                sql_script = f.read()
-            with self.conn.cursor() as cur:
-                cur.execute(sql_script)
-            logger.info("TimescaleDB hypertable schema verified/initialized.")
+            try:
+                with open(sql_path, "r") as f:
+                    sql_script = f.read()
+                with self.conn.cursor() as cur:
+                    cur.execute(sql_script)
+                logger.info("Database schema verified/initialized.")
+            except Exception as e:
+                logger.error(f"Error initializing SQL schema: {e}")
 
     def _handle_shutdown(self, signum, frame):
         logger.info("Shutdown signal received. Closing database connections...")
@@ -67,38 +71,52 @@ class DBSinkAgent:
         sys.exit(0)
 
     def save_market_tick(self, payload: dict):
-        tick = MarketTick(**payload)
-        query = """
-            INSERT INTO market_ticks (timestamp, symbol, price, volume)
-            VALUES (%s, %s, %s, %s);
-        """
-        with self.conn.cursor() as cur:
-            cur.execute(query, (tick.timestamp, tick.symbol, tick.price, tick.volume))
+        if not self.conn:
+            return
+        try:
+            tick = MarketTick(**payload)
+            query = """
+                INSERT INTO market_ticks (timestamp, symbol, price, volume)
+                VALUES (%s, %s, %s, %s);
+            """
+            with self.conn.cursor() as cur:
+                cur.execute(query, (tick.timestamp, tick.symbol, tick.price, tick.volume))
+        except Exception as e:
+            logger.error(f"Failed to insert market tick into DB: {e}")
 
     def save_agent_signal(self, payload: dict):
-        sig = AgentSignal(**payload)
-        query = """
-            INSERT INTO agent_signals (timestamp, agent_id, commodity, action, confidence, reasoning)
-            VALUES (%s, %s, %s, %s, %s, %s);
-        """
-        with self.conn.cursor() as cur:
-            cur.execute(query, (sig.timestamp, sig.agent_id, sig.commodity, sig.action, sig.confidence, sig.reasoning))
+        if not self.conn:
+            return
+        try:
+            sig = AgentSignal(**payload)
+            query = """
+                INSERT INTO agent_signals (timestamp, agent_id, commodity, action, confidence, reasoning)
+                VALUES (%s, %s, %s, %s, %s, %s);
+            """
+            with self.conn.cursor() as cur:
+                cur.execute(query, (sig.timestamp, sig.agent_id, sig.commodity, sig.action, sig.confidence, sig.reasoning))
+        except Exception as e:
+            logger.error(f"Failed to insert agent signal into DB: {e}")
 
     def save_execution_order(self, payload: dict):
-        order = ExecutionOrder(**payload)
-        query = """
-            INSERT INTO execution_orders (order_id, timestamp, commodity, action, quantity, order_type, stop_loss, take_profit, synthesized_confidence, reasoning)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-        """
-        with self.conn.cursor() as cur:
-            cur.execute(query, (
-                order.order_id, order.timestamp, order.commodity, order.action,
-                order.quantity, order.order_type, order.stop_loss, order.take_profit,
-                order.synthesized_confidence, order.reasoning
-            ))
+        if not self.conn:
+            return
+        try:
+            order = ExecutionOrder(**payload)
+            query = """
+                INSERT INTO execution_orders (order_id, timestamp, commodity, action, quantity, order_type, stop_loss, take_profit, synthesized_confidence, reasoning)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+            """
+            with self.conn.cursor() as cur:
+                cur.execute(query, (
+                    order.order_id, order.timestamp, order.commodity, order.action,
+                    order.quantity, order.order_type, order.stop_loss, order.take_profit,
+                    order.synthesized_confidence, order.reasoning
+                ))
+        except Exception as e:
+            logger.error(f"Failed to insert execution order into DB: {e}")
 
     def start(self):
-        """Starts multi-topic Kafka consumer and routes events to corresponding SQL tables."""
         consumer = Consumer({
             'bootstrap.servers': self.kafka_broker,
             'group.id': 'timescaledb_persistence_group',
@@ -107,7 +125,7 @@ class DBSinkAgent:
 
         topics = ['market-ticks', 'quant-signals', 'news-signals', 'execution-orders']
         consumer.subscribe(topics)
-        logger.info(f"Subscribed to topics {topics}. Streaming events into TimescaleDB...")
+        logger.info(f"Subscribed to topics {topics}. Ready for streaming...")
 
         try:
             while self.running:
