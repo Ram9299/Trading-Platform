@@ -64,12 +64,26 @@ st.sidebar.header("🚨 Emergency Controls")
 if not st.session_state.kill_switch_active:
     if st.sidebar.button("🔴 ACTIVATE GLOBAL KILL SWITCH", type="primary"):
         st.session_state.kill_switch_active = True
+        
+        # Broadcast HALT command to Kafka
+        broker = EventBroker(broker_url=broker_url)
+        broker.publish_event("system-commands", {"command": "ACTIVATE_KILL_SWITCH"})
+        broker.flush()
+        
         st.sidebar.error("KILL SWITCH ACTIVATED! All automated trading suspended.")
+        st.rerun()
 else:
     st.sidebar.error("⚠️ SYSTEM HALTED BY KILL SWITCH")
     if st.sidebar.button("🟢 RESUME AUTOMATED TRADING"):
         st.session_state.kill_switch_active = False
+        
+        # Broadcast RESUME command to Kafka
+        broker = EventBroker(broker_url=broker_url)
+        broker.publish_event("system-commands", {"command": "DEACTIVATE_KILL_SWITCH"})
+        broker.flush()
+        
         st.sidebar.success("Trading resumed.")
+        st.rerun()
 
 # -------------------------------------------------------------
 # Background Kafka Subscriber Thread
