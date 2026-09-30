@@ -1,5 +1,10 @@
--- Enable TimescaleDB Extension
-CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
+-- Attempt TimescaleDB Extension initialization safely
+DO $$
+BEGIN
+    CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'TimescaleDB extension not available. Falling back to standard PostgreSQL tables.';
+END $$;
 
 -- 1. Real-Time Market Ticks Table
 CREATE TABLE IF NOT EXISTS market_ticks (
@@ -9,10 +14,14 @@ CREATE TABLE IF NOT EXISTS market_ticks (
     volume NUMERIC(12, 4) NOT NULL
 );
 
--- Convert to TimescaleDB Hypertable partitioned by time
-SELECT create_hypertable('market_ticks', 'timestamp', if_not_exists => TRUE);
+-- Safely convert to Hypertable if TimescaleDB extension is active
+DO $$
+BEGIN
+    PERFORM create_hypertable('market_ticks', 'timestamp', if_not_exists => TRUE);
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Skipping hypertable conversion (running standard Postgres table).';
+END $$;
 
--- Index for fast symbol + time range lookups
 CREATE INDEX IF NOT EXISTS idx_market_ticks_symbol_time ON market_ticks (symbol, timestamp DESC);
 
 -- 2. Quantitative & News Signals Table

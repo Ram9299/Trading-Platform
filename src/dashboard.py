@@ -136,7 +136,7 @@ with col_left:
                 yaxis_title="Price ($)",
                 margin=dict(l=20, r=20, t=30, b=20)
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         else:
             st.info(f"Waiting for incoming price ticks for {selected_commodity}...")
     else:
@@ -163,7 +163,7 @@ if orders_list:
         pd.DataFrame(orders_list)[
             ["order_id", "commodity", "action", "quantity", "stop_loss", "take_profit", "synthesized_confidence", "reasoning"]
         ],
-        use_container_width=True
+        width="stretch"
     )
 else:
     st.info("No execution orders triggered by Core Agent 3 yet.")
