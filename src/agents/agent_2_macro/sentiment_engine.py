@@ -17,7 +17,7 @@ logger = logging.getLogger("MacroSentimentEngine")
 
 class MacroSentimentEngine:
     """
-    Core Agent 2: Scrapes news, scores sentiment using an LLM,
+    Core Agent 2: Scrapes news, scores sentiment using a local LLM (Ollama),
     and publishes macro sentiment signals to Kafka.
     """
     def __init__(self, kafka_broker: str = "localhost:9092", poll_interval: int = 30):
@@ -38,9 +38,17 @@ class MacroSentimentEngine:
             "https://news.google.com/rss/search?q=commodities+crude+oil+gold&hl=en-US&gl=US&ceid=US:en"
         ]
 
-        # LLM Initialization (OpenAI or compatible endpoint like Ollama/LocalAI)
-        api_key = os.getenv("OPENAI_API_KEY", "mock-key")
-        self.openai_client = OpenAI(api_key=api_key)
+        # -------------------------------------------------------------
+        # LOCAL OLLAMA CONFIGURATION (Free, unlimited local LLM)
+        # -------------------------------------------------------------
+        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+        self.model_name = os.getenv("OLLAMA_MODEL", "llama3.2")
+        
+        # Point the standard OpenAI SDK to your local Ollama instance
+        self.openai_client = OpenAI(
+            base_url=ollama_url,
+            api_key="ollama"  # Ollama doesn't require an actual API key
+        )
         
         # Kafka Event Broker
         self.broker = EventBroker(broker_url=kafka_broker, group_id="agent_2_sentiment")
@@ -56,14 +64,10 @@ class MacroSentimentEngine:
 
     def analyze_headline_with_llm(self, headline: str, commodity: str) -> tuple[float, float, str]:
         """
-        Passes headline to LLM to produce a structured JSON response.
+        Queries the local Ollama LLM for structured financial sentiment analysis.
+        Includes a local keyword fallback if Ollama service is unavailable.
         Returns: (sentiment_score [-1.0 to 1.0], confidence [0.0 to 1.0], reasoning)
         """
-        # If no OpenAI API key is set, fallback to mock score for safe local testing
-        if os.getenv("OPENAI_API_KEY") is None:
-            logger.warning("No OPENAI_API_KEY found. Running in local mock mode.")
-            return 0.5, 0.8, "Mock LLM reasoning: Price expected to rise due to demand news."
-
         system_prompt = (
             "You are an expert Wall Street commodity analyst. Evaluate the given news headline "
             "and determine its impact on the target commodity. Output ONLY a valid JSON object with keys: "
@@ -75,7 +79,7 @@ class MacroSentimentEngine:
 
         try:
             response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini", # Lightweight and low latency
+                model=self.model_name,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -87,11 +91,26 @@ class MacroSentimentEngine:
             return (
                 float(result.get("sentiment_score", 0.0)),
                 float(result.get("confidence", 0.5)),
-                result.get("reasoning", "Parsed from headline.")
+                result.get("reasoning", "Parsed via local Ollama LLM.")
             )
         except Exception as e:
-            logger.error(f"Error invoking LLM: {e}")
-            return 0.0, 0.0, "LLM analysis failed."
+            # Local keyword fallback if Ollama service is stopped or unreachable
+            headline_lower = headline.lower()
+            bullish_words = ["surge", "soar", "gain", "rally", "buy", "up", "bull", "high", "growth"]
+            bearish_words = ["drop", "slide", "fall", "plummet", "sell", "down", "bear", "low", "war", "risk"]
+            
+            bull_count = sum(1 for w in bullish_words if w in headline_lower)
+            bear_count = sum(1 for w in bearish_words if w in headline_lower)
+            
+            if bull_count > bear_count:
+                score = 0.6
+            elif bear_count > bull_count:
+                score = -0.6
+            else:
+                score = 0.0
+
+            logger.warning(f"Ollama API unavailable ({e}). Local keyword fallback score: {score}")
+            return score, 0.7, f"[Rule Fallback] Keyword matches: +{bull_count} / -{bear_count}"
 
     def process_news_feeds(self):
         """Scrapes RSS feeds and generates AgentSignals for matching commodities."""
@@ -113,7 +132,7 @@ class MacroSentimentEngine:
                     if any(kw in headline_lower for kw in keywords):
                         logger.info(f"Matched News for [{symbol}]: '{headline}'")
                         
-                        # 1. Analyze Sentiment via LLM
+                        # 1. Analyze Sentiment via Local LLM / Rule Engine
                         score, confidence, reasoning = self.analyze_headline_with_llm(headline, symbol)
                         
                         # 2. Determine Action
@@ -130,14 +149,14 @@ class MacroSentimentEngine:
                                 commodity=symbol,
                                 action=action,
                                 confidence=confidence,
-                                reasoning=f"[News Impact Score: {score:+.2f}] {reasoning}"
+                                reasoning=f"[Local LLM Sentiment: {score:+.2f}] {reasoning}"
                             )
                             logger.info(f"Publishing News Signal: {symbol} -> {action} | {reasoning}")
                             self.broker.publish_event("news-signals", signal.model_dump())
 
     def start(self):
         """Main execution loop for polling RSS news."""
-        logger.info("Starting Core Agent 2 (Macro & Sentiment Engine)...")
+        logger.info(f"Starting Core Agent 2 (Macro Engine) targeting local model '{self.model_name}'...")
         while self.running:
             try:
                 self.process_news_feeds()
