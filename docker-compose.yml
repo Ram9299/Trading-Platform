@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  # Message Broker for Agent-to-Agent communication
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --mode dev-container
+    ports:
+      - "9092:9092"
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+
+  # Time-Series Database for Market Data
+  timescaledb:
+    image: timescale/timescaledb:latest-pg14
+    environment:
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: trader_password
+      POSTGRES_DB: market_data
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescaledb-data:/var/lib/postgresql/data
+
+volumes:
+  redpanda-data:
+  timescaledb-data:

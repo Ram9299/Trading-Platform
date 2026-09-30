@@ -1,0 +1,15 @@
+# Orchestration & LLMs
+langgraph
+langchain
+openai
+
+# Infrastructure & Data
+confluent-kafka
+psycopg2-binary
+pandas
+numpy
+
+# Broker / Data APIs (Examples)
+ccxt         # Crypto exchange API wrapper
+yfinance     # Free Yahoo Finance data for testing
+python-dotenv
