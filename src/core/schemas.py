@@ -26,3 +26,16 @@ class AgentSignal(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+class ExecutionOrder(BaseModel):
+    """Final actionable order payload emitted by Core Agent 3 for execution."""
+    order_id: str
+    commodity: str
+    action: Literal["BUY", "SELL"]
+    quantity: float
+    order_type: Literal["MARKET", "LIMIT"] = "MARKET"
+    stop_loss: float
+    take_profit: float
+    synthesized_confidence: float
+    reasoning: str
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
