@@ -7,6 +7,9 @@ from collections import deque
 from confluent_kafka import Consumer, KafkaError
 import plotly.graph_objects as go
 
+from src.core.schemas import AgentSignal, ExecutionOrder
+from src.core.kafka_client import EventBroker
+
 st.set_page_config(
     page_title="Multi-Agent Trading Platform",
     page_icon="📈",
@@ -17,13 +20,9 @@ st.set_page_config(
 st.title("⚡ Industrial Multi-Agent Futures Trading Platform")
 st.caption("Live Observability Dashboard: Ingestion ➔ Indicator Engine ➔ Macro Sentiment ➔ Synthesizer ➔ Paper Execution")
 
-# Thread-safe global message buffers (Max 200 items retained)
-if "ticks_buffer" not in st.session_state:
-    st.session_state.ticks_buffer = deque(maxlen=200)
-if "signals_buffer" not in st.session_state:
-    st.session_state.signals_buffer = deque(maxlen=50)
-if "orders_buffer" not in st.session_state:
-    st.session_state.orders_buffer = deque(maxlen=50)
+# Global Emergency State
+if "kill_switch_active" not in st.session_state:
+    st.session_state.kill_switch_active = False
 
 # Sidebar Controls
 st.sidebar.header("⚙️ System Configuration")
@@ -31,15 +30,52 @@ broker_url = st.sidebar.text_input("Kafka Broker", "localhost:9092")
 auto_refresh = st.sidebar.checkbox("Auto-Refresh Feed (3s)", value=True)
 selected_commodity = st.sidebar.selectbox("Commodity Focus", ["CL=F", "GC=F", "NG=F"])
 
+st.sidebar.divider()
+st.sidebar.header("🎛️ Manual Override Controls")
+
+# Manual Trade Trigger Form
+with st.sidebar.form("manual_order_form"):
+    st.write("Publish Manual Override Signal")
+    manual_commodity = st.selectbox("Symbol", ["CL=F", "GC=F", "NG=F"], key="manual_sym")
+    manual_action = st.radio("Action", ["BUY", "SELL"], horizontal=True)
+    manual_confidence = st.slider("Confidence", 0.5, 1.0, 0.9)
+    submit_order = st.form_submit_button("⚡ Execute Manual Signal")
+
+    if submit_order:
+        if st.session_state.kill_switch_active:
+            st.error("Cannot execute: Global Emergency Kill Switch is ACTIVE!")
+        else:
+            broker = EventBroker(broker_url=broker_url)
+            manual_signal = AgentSignal(
+                agent_id="human_trader_override",
+                commodity=manual_commodity,
+                action=manual_action,
+                confidence=manual_confidence,
+                reasoning=f"[Manual Dashboard Override] Trader executed manual {manual_action}."
+            )
+            broker.publish_event("quant-signals", manual_signal.model_dump())
+            broker.flush()
+            st.success(f"Published manual {manual_action} signal for {manual_commodity}!")
+
+st.sidebar.divider()
+st.sidebar.header("🚨 Emergency Controls")
+
+# Emergency Kill Switch Button
+if not st.session_state.kill_switch_active:
+    if st.sidebar.button("🔴 ACTIVATE GLOBAL KILL SWITCH", type="primary"):
+        st.session_state.kill_switch_active = True
+        st.sidebar.error("KILL SWITCH ACTIVATED! All automated trading suspended.")
+else:
+    st.sidebar.error("⚠️ SYSTEM HALTED BY KILL SWITCH")
+    if st.sidebar.button("🟢 RESUME AUTOMATED TRADING"):
+        st.session_state.kill_switch_active = False
+        st.sidebar.success("Trading resumed.")
+
 # -------------------------------------------------------------
-# Background Kafka Subscriber Thread (Persists Across Reruns)
+# Background Kafka Subscriber Thread
 # -------------------------------------------------------------
 @st.cache_resource
 def start_kafka_background_listener(broker: str):
-    """
-    Runs a single, continuous background consumer thread.
-    This prevents Kafka offset desyncs on Streamlit UI reruns.
-    """
     shared_data = {
         "ticks": deque(maxlen=200),
         "signals": deque(maxlen=50),
@@ -47,7 +83,6 @@ def start_kafka_background_listener(broker: str):
     }
 
     def kafka_worker():
-        # Unique consumer group name with timestamp to always read from earliest available
         consumer_group = f"streamlit_ui_listener_{int(time.time())}"
         consumer = Consumer({
             'bootstrap.servers': broker,
@@ -62,8 +97,6 @@ def start_kafka_background_listener(broker: str):
             if msg is None:
                 continue
             if msg.error():
-                if msg.error().code() != KafkaError._PARTITION_EOF:
-                    pass
                 continue
 
             try:
@@ -83,17 +116,13 @@ def start_kafka_background_listener(broker: str):
     thread.start()
     return shared_data
 
-# Initialize Background Listener
 live_data = start_kafka_background_listener(broker_url)
 
-# Copy thread-safe deque snapshots to session state
 ticks_list = list(live_data["ticks"])
 signals_list = list(live_data["signals"])
 orders_list = list(live_data["orders"])
 
-# -------------------------------------------------------------
 # Top Metric Cards
-# -------------------------------------------------------------
 m1, m2, m3, m4 = st.columns(4)
 
 df_ticks = pd.DataFrame(ticks_list)
@@ -104,16 +133,16 @@ if not df_ticks.empty and 'symbol' in df_ticks.columns:
     if not symbol_df.empty:
         latest_price = symbol_df.iloc[-1]['price']
 
+status_label = "🔴 SYSTEM HALTED" if st.session_state.kill_switch_active else "🟢 AUTOMATED"
+
 m1.metric("Selected Commodity", selected_commodity, f"${latest_price:.2f}")
-m2.metric("Total Market Ticks Ingested", len(ticks_list))
+m2.metric("Execution Mode", status_label)
 m3.metric("Agent Signals Generated", len(signals_list))
 m4.metric("Executed Paper Orders", len(orders_list))
 
 st.divider()
 
-# -------------------------------------------------------------
 # Main Section: Charts & Agent Feed
-# -------------------------------------------------------------
 col_left, col_right = st.columns([2, 1])
 
 with col_left:
@@ -154,9 +183,7 @@ with col_right:
     else:
         st.info("No signals generated yet.")
 
-# -------------------------------------------------------------
 # Bottom Section: Execution Order Book
-# -------------------------------------------------------------
 st.subheader("⚡ Filled Execution Orders (Paper Trading)")
 if orders_list:
     st.dataframe(
@@ -168,7 +195,6 @@ if orders_list:
 else:
     st.info("No execution orders triggered by Core Agent 3 yet.")
 
-# Auto-refresh loop
 if auto_refresh:
     time.sleep(3)
     st.rerun()
