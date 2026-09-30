@@ -55,7 +55,7 @@ class EventBroker:
         consumer = Consumer({
             'bootstrap.servers': self.broker_url,
             'group.id': self.group_id,
-            'auto.offset.reset': 'latest' # Only care about live data
+            'auto.offset.reset': 'earliest' # Only care about live data
         })
         
         consumer.subscribe([topic])
@@ -66,6 +66,7 @@ class EventBroker:
                 msg = consumer.poll(1.0)
                 if msg is None:
                     continue
+
                 if msg.error():
                     if msg.error().code() == KafkaError._PARTITION_EOF:
                         continue
@@ -83,4 +84,4 @@ class EventBroker:
         except KeyboardInterrupt:
             logger.info("Consumer manually stopped.")
         finally:
-            consumer.close()
+            consumer.close()    

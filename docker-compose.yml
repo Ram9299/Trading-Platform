@@ -3,11 +3,17 @@ version: '3.8'
 services:
   # Message Broker for Agent-to-Agent communication
   redpanda:
-    image: docker.redpanda.com/redpandadata/redpanda:latest
+    image: redpandadata/redpanda:latest
     command:
       - redpanda
       - start
-      - --mode dev-container
+      - --smp 1
+      - --memory 1G
+      - --reserve-memory 0M
+      - --overprovisioned
+      - --node-id 0
+      - --kafka-addr internal://0.0.0.0:29092,external://0.0.0.0:9092
+      - --advertise-kafka-addr internal://redpanda:29092,external://localhost:9092
     ports:
       - "9092:9092"
     volumes:

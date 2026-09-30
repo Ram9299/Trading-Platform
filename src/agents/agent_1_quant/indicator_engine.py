@@ -3,12 +3,13 @@ import signal
 import sys
 import pandas as pd
 from collections import defaultdict, deque
+import yfinance as yf
 
 # Import core infrastructure
 from src.core.schemas import MarketTick, AgentSignal
 from src.core.kafka_client import EventBroker
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - [Agent 1B IndicatorEngine] - %(levelname)s - %(message)s")
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - [Agent 1B IndicatorEngine] - %(levelname)s - %(message)s")
 logger = logging.getLogger("IndicatorEngine")
 
 class IndicatorEngine:
@@ -29,6 +30,18 @@ class IndicatorEngine:
         # Attach graceful shutdown handlers
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
+
+        # PRE-WARM AT THE VERY END
+        logger.info("Pre-warming indicator engine with historical data...")
+        for symbol in ["CL=F", "GC=F", "NG=F"]:
+            try:
+                hist = yf.Ticker(symbol).history(period="1d", interval="1m")
+                if not hist.empty:
+                    recent_closes = hist["Close"].tail(20).tolist()
+                    self.price_history[symbol].extend(recent_closes)
+                    logger.info(f"Loaded {len(recent_closes)} historical bars for {symbol}")
+            except Exception as e:
+                logger.warning(f"Could not pre-warm data for {symbol}: {e}")
 
     def _handle_shutdown(self, signum, frame):
         logger.info("Shutdown signal received. Flushing broker...")
@@ -90,6 +103,7 @@ class IndicatorEngine:
 
     def on_tick_received(self, tick_dict: dict):
         """Callback function executed every time a new MarketTick arrives from Kafka."""
+    
         tick = MarketTick(**tick_dict)
         symbol = tick.symbol
         
@@ -99,18 +113,19 @@ class IndicatorEngine:
         
         # We need at least 20 ticks to calculate a 20-period EMA
         if len(prices) < 20:
-            logger.debug(f"Collecting data for {symbol}... ({len(prices)}/20)")
+            logger.info(f"[{symbol}] Warming up rolling window: {len(prices)}/20 ticks received...")
             return
             
         # 1. Calculate Mathematics
         ema, rsi = self.calculate_indicators(prices)
+        logger.info(f"[{symbol}] Price: ${tick.price:.2f} | EMA(20): ${ema:.2f} | RSI(14): {rsi:.1f}")
         
         # 2. Evaluate Trade Logic
         signal = self.evaluate_strategy(symbol, tick.price, ema, rsi)
         
         # 3. Publish to Synthesizer if a signal was generated
         if signal:
-            logger.info(f"Signal Generated for {symbol}: {signal.action} | {signal.reasoning}")
+            logger.info(f"🚨 SIGNAL GENERATED [{symbol}]: {signal.action} | Reason: {signal.reasoning}")
             self.broker.publish_event(topic="quant-signals", payload=signal.model_dump())
 
     def start(self):

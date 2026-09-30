@@ -82,7 +82,8 @@ class DataIngestionAgent:
                     payload = tick.model_dump()
                     self.broker.publish_event(topic=self.topic, payload=payload)
                     logger.info(f"Published MarketTick: {symbol} @ ${tick.price:.2f} | Vol: {tick.volume}")
-
+            
+            self.broker.flush()
             time.sleep(self.poll_interval)
 
 
