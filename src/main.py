@@ -13,6 +13,7 @@ AGENT_MODULES = [
     "src.agents.agent_2_macro.sentiment_engine",
     "src.agents.agent_3_synthesizer.portfolio_manager",
     "src.agents.execution.paper_executor",
+    "src.agents.persistence.db_sink",
 ]
 
 processes = []
