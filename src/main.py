@@ -7,7 +7,6 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [SystemLauncher] - %(levelname)s - %(message)s")
 logger = logging.getLogger("Launcher")
 
-# List of modules to run concurrently as microservices
 AGENT_MODULES = [
     "src.agents.agent_1_quant.data_ingestion",
     "src.agents.agent_1_quant.indicator_engine",
@@ -29,19 +28,25 @@ def main():
     signal.signal(signal.SIGINT, stop_all_agents)
     signal.signal(signal.SIGTERM, stop_all_agents)
 
-    logger.info("🚀 Launching Multi-Agent Trading System...")
+    logger.info("🚀 Launching Multi-Agent Trading Platform...")
 
+    # 1. Boot all core Python agents
     for module in AGENT_MODULES:
         logger.info(f"Starting sub-agent process: {module}")
-        # Launch using Python module notation (-m) from root directory
         proc = subprocess.Popen([sys.executable, "-m", module])
         processes.append((proc, module))
-        time.sleep(2) # Stagger start to allow Kafka topic creation
+        time.sleep(2)
 
-    logger.info("✅ All core agents are operational and running!")
+    # 2. Boot Streamlit Dashboard UI
+    logger.info("Starting Streamlit Dashboard UI...")
+    dashboard_proc = subprocess.Popen([
+        sys.executable, "-m", "streamlit", "run", "src/dashboard.py", "--server.port=8501", "--server.headless=true"
+    ])
+    processes.append((dashboard_proc, "Streamlit Dashboard"))
+
+    logger.info("✅ Platform fully operational! Dashboard available at http://localhost:8501")
     logger.info("Press Ctrl+C to gracefully shut down the platform.")
 
-    # Keep launcher alive
     while True:
         time.sleep(1)
 

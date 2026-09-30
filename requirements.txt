@@ -16,3 +16,5 @@ python-dotenv
 pydantic>=2.4.0
 yfinance>=0.2.30
 feedparser>=6.0.10
+streamlit>=1.28.0
+plotly>=5.17.0
