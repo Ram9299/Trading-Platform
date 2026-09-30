@@ -4,7 +4,6 @@ from confluent_kafka import Producer, Consumer, KafkaError
 from confluent_kafka.admin import AdminClient, NewTopic
 from typing import Callable, Dict, Any
 
-# Configure logging for the infrastructure
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("EventBroker")
 
@@ -17,39 +16,40 @@ class EventBroker:
         self.broker_url = broker_url
         self.group_id = group_id
         
-        # Initialize Producer
-        self.producer = Producer({
-            'bootstrap.servers': self.broker_url,
-            'client.id': 'agent_producer'
-        })
+        # Check if running in offline mock backtesting mode
+        self.is_mock = broker_url in [None, "mock", "offline", ""]
+
+        if not self.is_mock:
+            # Initialize Producer for real/live environment
+            self.producer = Producer({
+                'bootstrap.servers': self.broker_url,
+                'client.id': 'agent_producer'
+            })
+        else:
+            self.producer = None
+            logger.info("EventBroker initialized in MOCK/OFFLINE mode (Kafka producer disabled).")
 
     def ensure_topic_exists(self, topic_name: str):
-        """
-        Creates the topic on Kafka/Redpanda if it does not already exist.
-        Prevents UNKNOWN_TOPIC_OR_PART errors on consumer startup.
-        """
+        if self.is_mock:
+            return
         admin_client = AdminClient({'bootstrap.servers': self.broker_url})
         new_topic = NewTopic(topic_name, num_partitions=1, replication_factor=1)
         
         futures = admin_client.create_topics([new_topic])
         for topic, future in futures.items():
             try:
-                future.result()  # Blocks until topic creation succeeds
-                logger.info(f"Topic '{topic_name}' verified / created successfully.")
+                future.result()
             except Exception as e:
-                # If topic already exists, ignore the error
                 if "TOPIC_ALREADY_EXISTS" not in str(e):
                     logger.debug(f"Topic creation notice for '{topic_name}': {e}")
 
     def _delivery_report(self, err, msg):
-        """Callback triggered when a message is successfully delivered or fails."""
         if err is not None:
             logger.error(f"Message delivery failed: {err}")
-        else:
-            logger.debug(f"Event delivered to {msg.topic()} [{msg.partition()}]")
 
     def publish_event(self, topic: str, payload: Dict[str, Any]):
-        """Serializes a Pydantic dict to JSON and pushes it to Kafka."""
+        if self.is_mock:
+            return # Skip network calls during backtesting
         try:
             json_payload = json.dumps(payload, default=str)
             self.producer.produce(
@@ -57,21 +57,21 @@ class EventBroker:
                 json_payload.encode('utf-8'), 
                 callback=self._delivery_report
             )
-            self.producer.poll(0)  # Serve delivery callback queue
+            self.producer.poll(0)
         except Exception as e:
             logger.error(f"Failed to publish event to {topic}: {e}")
 
     def flush(self):
-        """Ensure all messages are sent before an agent shuts down."""
+        if self.is_mock or not self.producer:
+            return
         logger.info("Flushing pending events to Kafka...")
         self.producer.flush()
 
     def start_consumer(self, topic: str, on_message: Callable[[Dict[str, Any]], None]):
-        """
-        Starts a blocking consumer loop.
-        Ensures topic existence before subscribing and handles transient topic errors.
-        """
-        # Ensure the topic exists on Redpanda before attempting to subscribe
+        if self.is_mock:
+            logger.info(f"Mock mode active: Consumer for '{topic}' bypassed.")
+            return
+
         self.ensure_topic_exists(topic)
 
         consumer = Consumer({
@@ -90,14 +90,12 @@ class EventBroker:
                     continue
 
                 if msg.error():
-                    # Ignore harmless partition EOF and transient topic initialization errors
                     if msg.error().code() in (KafkaError._PARTITION_EOF, KafkaError.UNKNOWN_TOPIC_OR_PART):
                         continue
                     else:
                         logger.error(f"Consumer error: {msg.error()}")
                         break
                 
-                # Parse JSON and trigger the agent's logic
                 try:
                     payload = json.loads(msg.value().decode('utf-8'))
                     on_message(payload)
